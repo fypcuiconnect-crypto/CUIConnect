@@ -2,7 +2,6 @@
 
 // --- Configuration ---
 const API_BASE_URL = "https://cuiconnect-cuiconnect.hf.space/api/v1";
-const INGESTION_BASE_URL = "https://hammad712-ingestion.hf.space";
 
 // --- Types & Interfaces ---
 
@@ -94,166 +93,7 @@ export async function signup(full_name: string, email: string, password: string)
 }
 
 // ==========================================
-// 📂 FILE INGESTION UTILITY
-// ==========================================
-
-interface IngestionCallbacks {
-  onProgress: (progress: number, message: string) => void;
-  onError: (message: string) => void;
-  onComplete: (downloadUrl: string | null, fileName: string | null) => void;
-}
-
-// --- Legacy: Single PDF Stream (XHR based) ---
-export const ingestPdfStream = async (
-  file: File,
-  callbacks: IngestionCallbacks
-) => {
-  const { onProgress, onError, onComplete } = callbacks;
-
-  if (!file) {
-    onError("No file provided");
-    return;
-  }
-
-  const formData = new FormData();
-  formData.append("file", file);
-
-  const xhr = new XMLHttpRequest();
-  const UPLOAD_URL = `${INGESTION_BASE_URL}/process/pdf/stream`; 
-
-  xhr.open("POST", UPLOAD_URL, true);
-
-  xhr.upload.onprogress = (event) => {
-    if (event.lengthComputable) {
-      const percentComplete = (event.loaded / event.total) * 100;
-      onProgress(percentComplete, `Uploading ${Math.round(percentComplete)}%...`);
-    }
-  };
-
-  xhr.onload = () => {
-    if (xhr.status >= 200 && xhr.status < 300) {
-      try {
-        const response = JSON.parse(xhr.responseText);
-        onComplete(response.download_url, response.filename);
-      } catch (e) {
-        onComplete(null, null); 
-      }
-    } else {
-      let errorMsg = `Upload failed: ${xhr.statusText}`;
-      try {
-        const errorResponse = JSON.parse(xhr.responseText);
-        if (errorResponse && errorResponse.detail) {
-          errorMsg = errorResponse.detail; 
-        }
-      } catch (e) {
-        console.error("Could not parse error response", e);
-      }
-      onError(errorMsg);
-    }
-  };
-
-  xhr.onerror = () => {
-    onError("Network connection error. Please check your internet.");
-  };
-
-  xhr.send(formData);
-};
-
-// --- NEW: Bulk/Smart Ingestion (Fetch Stream based) ---
-
-export interface BulkIngestionCallbacks {
-  onStatusUpdate: (event: any) => void; // Handles generic events like "batch_start", "file_finished"
-  onError: (message: string) => void;
-  onComplete: (reportUrl: string | null) => void;
-}
-
-export const ingestBulkDocument = async (
-  file: File,
-  callbacks: BulkIngestionCallbacks
-) => {
-  const { onStatusUpdate, onError, onComplete } = callbacks;
-
-  if (!file) {
-    onError("No file provided");
-    return;
-  }
-
-  const formData = new FormData();
-  formData.append("file", file);
-
-  try {
-    // Note: We use the /process/process-document endpoint which supports SSE responses
-    const response = await fetch(`${INGESTION_BASE_URL}/process/process-document`, {
-      method: "POST",
-      body: formData, 
-      // Do NOT set Content-Type header manually when using FormData, 
-      // the browser sets it with the boundary automatically.
-    });
-
-    if (!response.ok) {
-      const errText = await response.text();
-      let errMsg = "Upload failed";
-      try {
-        const jsonErr = JSON.parse(errText);
-        errMsg = jsonErr.detail || errMsg;
-      } catch {}
-      throw new Error(errMsg);
-    }
-
-    if (!response.body) throw new Error("No response stream received");
-
-    // Reading the SSE Stream
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      const chunk = decoder.decode(value, { stream: true });
-      const lines = chunk.split("\n\n");
-
-      for (const line of lines) {
-        if (line.startsWith("data: ")) {
-          const jsonStr = line.replace("data: ", "").trim();
-          if (!jsonStr) continue;
-
-          try {
-            const eventData = JSON.parse(jsonStr);
-
-            // 1. Pass raw event to UI for granular updates (e.g. "Processing file 1/5...")
-            onStatusUpdate(eventData);
-
-            // 2. Check for Completion
-            if (eventData.event === "batch_completed") {
-              onComplete(eventData.master_report_url);
-              return; // Stop reading
-            }
-            if (eventData.event === "completed") {
-              onComplete(eventData.report_url);
-              return; // Stop reading
-            }
-
-            // 3. Check for Fatal Errors
-            if (eventData.event === "fatal_error" || eventData.event === "error") {
-              onError(eventData.error || "Unknown processing error");
-              return;
-            }
-
-          } catch (e) {
-            console.warn("Failed to parse SSE event:", jsonStr);
-          }
-        }
-      }
-    }
-  } catch (err: any) {
-    onError(err.message || "Network error during bulk processing");
-  }
-};
-
-
-// ==========================================
-// 🚀 MAIN API OBJECT
+//  MAIN API OBJECT
 // ==========================================
 
 export const api = {
@@ -301,45 +141,6 @@ export const api = {
       }),
   },
 
-  ingestion: {
-    list: async () => {
-      const res = await fetch(`${INGESTION_BASE_URL}/files/list`);
-      if (!res.ok) throw new Error("Failed to fetch files");
-      return res.json();
-    },
-    
-    getDownloadUrl: (filename: string) => {
-      return `${INGESTION_BASE_URL}/files/download?filename=${encodeURIComponent(filename)}`;
-    },
-
-    delete: async (filename: string) => {
-      const res = await fetch(`${INGESTION_BASE_URL}/files/${encodeURIComponent(filename)}`, {
-        method: "DELETE",
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || "Failed to delete file");
-      }
-      return res.json();
-    },
-
-    rename: async (oldFilename: string, newFilename: string) => {
-      const res = await fetch(`${INGESTION_BASE_URL}/files/${encodeURIComponent(oldFilename)}/rename`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ new_filename: newFilename }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || "Failed to rename file");
-      }
-      return res.json();
-    },
-
-    // ✅ Exposed here for convenient access via api.ingestion.uploadBulk(...)
-    uploadBulk: ingestBulkDocument
-  },
-
   // ==========================================
   // 📊 VECTOR STORE FILE INGESTION
   // ==========================================
@@ -347,8 +148,7 @@ export const api = {
     ingestFile: async (
       file: File,
       source?: string,
-      datasetName?: string,
-      onProgress?: (progress: number, message: string) => void
+      datasetName?: string
     ) => {
       const formData = new FormData();
       formData.append("file", file);
@@ -361,9 +161,7 @@ export const api = {
         headers["Authorization"] = `Bearer ${token}`;
       }
 
-      // Remove /api/v1 from base and directly call backend route
-      const backendUrl = process.env.NEXT_PUBLIC_API_URL?.replace('/api/v1', '') || "http://localhost:8000";
-      const response = await fetch(`${backendUrl}/api/v1/ingest/file`, {
+      const response = await fetch(`${API_BASE_URL}/ingest/file`, {
         method: "POST",
         headers,
         body: formData,
