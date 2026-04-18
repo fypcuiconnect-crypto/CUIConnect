@@ -340,6 +340,44 @@ export const api = {
     uploadBulk: ingestBulkDocument
   },
 
+  // ==========================================
+  // 📊 VECTOR STORE FILE INGESTION
+  // ==========================================
+  vectorStore: {
+    ingestFile: async (
+      file: File,
+      source?: string,
+      datasetName?: string,
+      onProgress?: (progress: number, message: string) => void
+    ) => {
+      const formData = new FormData();
+      formData.append("file", file);
+      if (source) formData.append("source", source);
+      if (datasetName) formData.append("dataset_name", datasetName);
+
+      const token = localStorage.getItem("accessToken");
+      const headers: HeadersInit = {};
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+
+      // Remove /api/v1 from base and directly call backend route
+      const backendUrl = process.env.NEXT_PUBLIC_API_URL?.replace('/api/v1', '') || "http://localhost:8000";
+      const response = await fetch(`${backendUrl}/api/v1/ingest/file`, {
+        method: "POST",
+        headers,
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || "File ingestion failed");
+      }
+
+      return response.json();
+    },
+  },
+
   // --- Message Handling ---
   streamMessage: async (
     message: string, 
