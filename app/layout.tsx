@@ -6,11 +6,11 @@ import { ThemeProvider } from './providers'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'v0 App',
-  description: 'Created with v0',
-  generator: 'v0.app',
+  title: 'CUI Connect',
+  description: 'CUI Connect is a conversational AI platform for smart document search, team collaboration, and data-driven decision making.',
+  generator: 'CUI Connect',
   icons: {
-    icon: '/icon.svg',
+    icon: '/images/download.jpeg',
   },
 }
 
